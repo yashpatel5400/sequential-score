@@ -1,14 +1,14 @@
 adjust_temp: false
-batch_size: 32
+batch_size: 1
 boltzmann_confs: 32
 boltzmann_steps: 5
-boltzmann_training: false
+boltzmann_training: true
 boltzmann_weight: false
 cache: data/DRUGS/cache
 data_dir: data/DRUGS/drugs/
 dataset: drugs
 in_edge_features: 4
-in_node_features: 74
+in_node_features: 41
 likelihood: full
 limit_train_mols: 0
 log_dir: ./test_run

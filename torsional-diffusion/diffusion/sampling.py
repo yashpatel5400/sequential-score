@@ -9,7 +9,6 @@ from torch_geometric.data import Dataset
 from torch_geometric.loader import DataLoader
 from rdkit import Chem, Geometry
 from rdkit.Chem import AllChem
-from utils.visualise import PDBFile
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 still_frames = 10
@@ -53,7 +52,6 @@ def embed_seeds(mol, data, n_confs, single_conf=False, smi=None, embed_func=None
             return [], None
         if mmff: try_mmff(mol)
 
-    if pdb: pdb = PDBFile(mol)
     conformers = []
     for i in range(n_confs):
         data_conf = copy.deepcopy(data)

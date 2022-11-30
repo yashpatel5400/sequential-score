@@ -2,6 +2,7 @@ import os.path
 from multiprocessing import Pool
 
 from rdkit import Chem
+from rdkit.Chem import AllChem
 import numpy as np
 import glob, pickle, random
 import os.path as osp
@@ -46,6 +47,89 @@ class TorsionNoiseTransform(BaseTransform):
         return (f'{self.__class__.__name__}(sigma_min={self.sigma_min}, '
                 f'sigma_max={self.sigma_max})')
 
+
+class EnergyDataset(Dataset):
+    def __init__(self, boltzmann_resampler, mode, transform=None, num_workers=1, cache=None):
+        super(EnergyDataset, self).__init__("", transform)
+        self.boltzmann_resampler = boltzmann_resampler
+
+        # two different alkane-12s to start with
+        if mode == "train":
+            smiles = ["[H]C([H])([H])C([H])([H])C([H])([H])C([H])(C([H])([H])C([H])([H])C([H])(C([H])([H])[H])C([H])([H])C([H])([H])[H])C([H])([H])C([H])(C([H])([H])C([H])([H])[H])C([H])(C([H])([H])C([H])([H])[H])C([H])([H])C([H])([H])[H]"]
+        else:
+            smiles = ["[H]C([H])([H])C([H])([H])C([H])([H])C([H])(C([H])([H])[H])C([H])([H])C([H])([H])C([H])([H])C([H])(C([H])([H])C([H])([H])[H])C([H])(C([H])([H])C([H])([H])[H])C([H])([H])C([H])(C([H])([H])[H])C([H])([H])C([H])([H])[H]"]
+
+        mols = [Chem.AddHs(Chem.MolFromSmiles(smile)) for smile in smiles]
+        unique_symbols = np.unique([[atom.GetSymbol() for atom in mol.GetAtoms()] for mol in mols])
+        self.types = dict(zip(unique_symbols, range(len(unique_symbols)))) # map of atoms -> index
+
+        if cache: cache += "." + mode
+        self.cache = cache
+        if cache and os.path.exists(cache):
+            print('Reusing preprocessing from cache', cache)
+            with open(cache, "rb") as f:
+                self.datapoints = pickle.load(f)
+        else:
+            print("Preprocessing")
+            self.datapoints = self.preprocess_datapoints(smiles, num_workers)
+            if cache:
+                print("Caching at", cache)
+                with open(cache, "wb") as f:
+                    pickle.dump(self.datapoints, f)
+
+    def preprocess_datapoints(self, smiles, num_workers):
+        print('Preparing to process', len(smiles), 'smiles')
+        datapoints = []
+        if num_workers > 1:
+            p = Pool(num_workers)
+            p.__enter__()
+        with tqdm.tqdm(total=len(smiles)) as pbar:
+            map_fn = p.imap if num_workers > 1 else map
+            for t in map_fn(self.filter_smiles, smiles):
+                if t:
+                    datapoints.append(t)
+                pbar.update()
+        if num_workers > 1: p.__exit__(None, None, None)
+        print('Fetched', len(datapoints), 'mols successfully')
+        return datapoints
+
+    def filter_smiles(self, smiles):
+        mol = Chem.AddHs(Chem.MolFromSmiles(smiles))
+        AllChem.EmbedMolecule(mol)
+        data = self.featurize_mol(mol, smiles)
+        if not data:
+            self.failures['featurize_mol_failed'] += 1
+            return False
+
+        edge_mask, mask_rotate = get_transformation_mask(data)
+        if np.sum(edge_mask) < 0.5:
+            self.failures['no_rotable_bonds'] += 1
+            return False
+
+        data.edge_mask = torch.tensor(edge_mask)
+        data.mask_rotate = mask_rotate
+        return data
+
+    def len(self):
+        return len(self.datapoints)
+
+    def get(self, idx):
+        data = self.datapoints[idx]
+        self.boltzmann_resampler.try_resample(data)
+        return copy.deepcopy(data)
+
+    def featurize_mol(self, mol, smiles):
+        pos = [torch.tensor(mol.GetConformer().GetPositions(), dtype=torch.float)]
+        normalized_weights = [1]
+        data = featurize_mol(mol, self.types)
+        data.canonical_smi, data.mol, data.pos, data.weights = smiles, mol, pos, normalized_weights
+        return data
+
+    def resample_all(self, resampler, temperature=None):
+        ess = []
+        for data in tqdm.tqdm(self.datapoints):
+            ess.append(resampler.resample(data, temperature=temperature))
+        return ess
 
 class ConformerDataset(Dataset):
     def __init__(self, root, split_path, mode, types, dataset, transform=None, num_workers=1, limit_molecules=None,
@@ -247,13 +331,20 @@ def construct_loader(args, modes=('train', 'val'), boltzmann_resampler=None):
     types = qm9_types if args.dataset == 'qm9' else drugs_types
 
     for mode in modes:
-        dataset = ConformerDataset(args.data_dir, args.split_path, mode, dataset=args.dataset,
-                                   types=types, transform=transform,
-                                   num_workers=args.num_workers,
-                                   limit_molecules=args.limit_train_mols,
-                                   cache=args.cache,
-                                   pickle_dir=args.std_pickles,
-                                   boltzmann_resampler=boltzmann_resampler)
+        k_energy_train = True
+        if k_energy_train:
+            dataset = EnergyDataset(boltzmann_resampler, mode,
+                                    transform=transform,
+                                    num_workers=args.num_workers,
+                                    cache=args.cache)
+        else:
+            dataset = ConformerDataset(args.data_dir, args.split_path, mode, dataset=args.dataset,
+                                    types=types, transform=transform,
+                                    num_workers=args.num_workers,
+                                    limit_molecules=args.limit_train_mols,
+                                    cache=args.cache,
+                                    pickle_dir=args.std_pickles,
+                                    boltzmann_resampler=boltzmann_resampler)
         loader = DataLoader(dataset=dataset,
                             batch_size=args.batch_size,
                             shuffle=False if mode == 'test' else True)
