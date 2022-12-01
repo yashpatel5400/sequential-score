@@ -1,5 +1,5 @@
 adjust_temp: false
-batch_size: 1
+batch_size: 32
 boltzmann_confs: 32
 boltzmann_steps: 5
 boltzmann_training: true

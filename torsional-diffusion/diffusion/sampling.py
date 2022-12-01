@@ -134,14 +134,15 @@ def sample(conformers, model, sigma_max=np.pi, sigma_min=0.01 * np.pi, steps=20,
 
 
 def pyg_to_mol(mol, data, mmff=False, rmsd=True, copy=True):
-    if not mol.GetNumConformers():
-        conformer = Chem.Conformer(mol.GetNumAtoms())
-        mol.AddConformer(conformer)
+    # if not mol.GetNumConformers():
+    conformer = Chem.Conformer(mol.GetNumAtoms())
+    mol.AddConformer(conformer, assignId=True)
+
     coords = data.pos
     if type(coords) is not np.ndarray:
         coords = coords.double().numpy()
     for i in range(coords.shape[0]):
-        mol.GetConformer(0).SetAtomPosition(i, Geometry.Point3D(coords[i, 0], coords[i, 1], coords[i, 2]))
+        mol.GetConformer(mol.GetNumConformers() - 1).SetAtomPosition(i, Geometry.Point3D(coords[i, 0], coords[i, 1], coords[i, 2]))
     if mmff:
         try:
             AllChem.MMFFOptimizeMoleculeConfs(mol, mmffVariant='MMFF94s')

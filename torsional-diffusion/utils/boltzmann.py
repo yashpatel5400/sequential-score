@@ -35,14 +35,16 @@ class BoltzmannResampler:
                          sigma_max=args.sigma_max, sigma_min=args.sigma_min, likelihood=args.likelihood)
 
         data.pos = []
+        data.energy = []
         logweights = []
 
         data.mol.RemoveAllConformers()
         for i, data_conf in enumerate(samples):
-            mol = pyg_to_mol(data.mol, data_conf, mmff=False, rmsd=False)
+            mol = pyg_to_mol(data.mol, data_conf, mmff=True, rmsd=False)
             populate_likelihood(mol, data_conf, water=False, xtb=None)
             data.pos.append(data_conf.pos)
             energy = mol.mmff_energy
+            data.energy.append(energy)
             logweights.append(-energy / kT - mol.euclidean_dlogp)
 
         weights = np.exp(logweights - np.max(logweights))

@@ -1,7 +1,7 @@
 import tqdm, yaml, pickle, json
 from argparse import ArgumentParser, Namespace
 
-from utils.utils import get_model
+from utils.utils import get_model, prune_conformers, get_conformer_energies
 from utils.boltzmann import *
 
 parser = ArgumentParser()
@@ -21,17 +21,22 @@ args = parser.parse_args()
     Evaluates the ESS given a trained torsional Boltzmann generator 
 """
 
-test_mols = pickle.load(open(args.test_pkl, 'rb'))
-test_smiles = list(test_mols.keys())
+test_smiles = ["[H]C([H])([H])C([H])([H])C([H])([H])C([H])(C([H])([H])C([H])([H])C([H])(C([H])([H])[H])C([H])([H])C([H])([H])[H])C([H])([H])C([H])(C([H])([H])C([H])([H])[H])C([H])(C([H])([H])C([H])([H])[H])C([H])([H])C([H])([H])[H]"]
+standard = 18.9667232606877
+total = 12.107139015589842
+mols = [Chem.AddHs(Chem.MolFromSmiles(smile)) for smile in test_smiles]
+unique_symbols = np.unique([[atom.GetSymbol() for atom in mol.GetAtoms()] for mol in mols])
+types = dict(zip(unique_symbols, range(len(unique_symbols)))) # map of atoms -> index
 
 test_data = []
 for test_smi in test_smiles:
-    mol = test_mols[test_smi][0]
-    data = featurize_mol(mol, 'drugs')
+    mol = Chem.AddHs(Chem.MolFromSmiles(test_smi))
+    AllChem.EmbedMolecule(mol)
+    data = featurize_mol(mol, types)
     data.mol = mol
     data.edge_mask, data.mask_rotate = get_transformation_mask(data)
     data.edge_mask = torch.tensor(data.edge_mask)
-    if data.mask_rotate.shape[0] < 3 or data.mask_rotate.shape[0] > 7: continue
+    # if data.mask_rotate.shape[0] < 3 or data.mask_rotate.shape[0] > 7: continue
     data.pos = [mol.GetConformers()[0].GetPositions()]
     test_data.append(data)
 print('Testing on', len(test_data), 'molecules')
@@ -73,7 +78,13 @@ ess = []
 for mol in tqdm.tqdm(test_data):
     ess_ = resampler.resample(mol)
     ess.append(ess_)
-print('mean', np.mean(ess), 'median', np.median(ess))
+    
+    AllChem.MMFFOptimizeMoleculeConfs(mol.mol)
+    pruned_mol = prune_conformers(mol.mol, tfd_thresh=0.05)
+    energies = get_conformer_energies(pruned_mol)
+    gibbs_reward = np.sum(np.exp(-1.0 * (np.array(energies) - standard)) / total)
+
+print('mean', np.mean(ess), 'median', np.median(ess), 'gibbs', gibbs_reward)
 
 with open(args.out, 'a') as f:
     f.write(json.dumps({
